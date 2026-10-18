@@ -20,7 +20,7 @@ recording, status/log persistence.
 ADR-003 B1 adds the shared engine lifecycle binding under
 `android/punchbridge/engine_binding.go`, the per-run runtime in
 `engine_runtime.go`, and the concrete libbox graft in `engine_libbox.go`.
-B2/B3 make connectcore v0.6.2 the sole orchestrator on both platforms through
+B2/B3 make connectcore v0.7.0 the sole orchestrator on both platforms through
 its mobile host API. Kotlin and Swift retain OS lifecycle, tunnel ownership,
 network observation, and explicit through-tunnel verification. See
 [IOS_ENGINE_CUTOVER.md](IOS_ENGINE_CUTOVER.md) for Swift parity evidence and
@@ -115,6 +115,13 @@ export interface NativeVpnState {
                                // the stale identity cleared by the stale-down guard — so a
                                // dead tunnel's class is never shown.
   lastError: string | null;
+  lastErrorCode: 'access_denied' | null; // stable code for a lastError TS presents in the user's
+                               // language (nativeErrorText); null for every other error, which
+                               // TS shows as-is. 'access_denied' = the broker refused this
+                               // installation (ADR-006 operator disable); the connect is not
+                               // retried. Set from the engine state's ErrorCode on FAILED, cleared
+                               // with lastError, and persisted beside it on both platforms. TS
+                               // collapses an absent or unknown value to null.
   logLines: string[];          // "[HH:mm:ss] message", newest last, cap 80
   recents: RecentNode[];       // newest first, deduped by relayId, cap 8
 }
@@ -435,7 +442,7 @@ The exact descriptor URL and opaque ticket are passed unchanged to
 Its loopback endpoint is validated and supplied to the existing Reality client.
 The shared transport implementation is the tagged Go module
 `github.com/openrung/openrung/wsscore`, pinned in
-`android/punchbridge/go.mod` (currently v0.6.0); the repository contains only the gomobile adapter,
+`android/punchbridge/go.mod` (currently v0.7.0); the repository contains only the gomobile adapter,
 ticket/lifecycle policy, telemetry, and platform integration. Android constructs
 the client with a `SocketProtector`; before the outer CDN socket connects it
 delegates to `VpnService.protect(fd)`. A missing callback, exception, panic, or
@@ -649,7 +656,7 @@ used as evidence that Reality or WSS carried end-to-end traffic.
   self-signed coordinators are accepted only when their exact certificate SHA-256
   appears in `AppConfig.PUNCH_COORDINATOR_CERT_SHA256_BY_HOST`; hostname endpoints
   use normal public-CA validation. Redirects and cleartext are always rejected.
-- Android's sole orchestrator is published `connectcore/v0.6.2` via the
+- Android's sole orchestrator is published `connectcore/v0.7.0` via the
   in-process libbox graft. It owns punch/RelayHub/direct/WSS selection, circuit
   breaking, health cadence, network recovery, session telemetry and terminal
   flushing. Kotlin supplies OS mechanics and explicit fresh-DNS plus pinned-HTTPS
@@ -716,7 +723,7 @@ phases, ENABLE_USER_SCRIPT_SANDBOXING=NO, current pbxproj settings), plus the
   ADR-001 vectors; no selectable native orchestrator remains.
 - `Shared/EngineStateProjection.swift` translates atomic Details into the
   existing app-group state: sanitized geographic location, display name, class,
-  matching recents and session ID. With current connectcore v0.6.2,
+  matching recents and session ID. With current connectcore v0.7.0,
   `RelayName == RelayID` represents an absent label; both adapters use the compact
   ID fallback for connected state and matching recents. Swift's snapshot owns
   the recents prepend/dedupe/cap rule, treating nil or blank relay IDs as legacy
@@ -778,7 +785,7 @@ phases, ENABLE_USER_SCRIPT_SANDBOXING=NO, current pbxproj settings), plus the
   archive once in the app's Frameworks directory.
 - `ios/build-libbox-release.sh` builds device/simulator slices from the pinned
   sing-box and module tags, including the shared mobile engine graft. Swift
-  calls `LibboxNewOpenRungMobileEngineForIOS(config, host, listener, error)`.
+  calls `LibboxNewOpenRungMobileEngineForIOS(config, host, key, listener, error)`.
   The constructor rejects non-iOS runtimes. Its nil protector is Apple-specific:
   ordinary provider sockets are outside its own TUN, while probes explicitly
   opt into that TUN. Android still requires a protector. Both release scripts

@@ -1,6 +1,6 @@
 # ADR-003 B1: engine lifecycle binding
 
-B1 introduced the lifecycle binding; B2 now pins connectcore v0.6.2 and uses
+B1 introduced the lifecycle binding; B2 now pins connectcore v0.7.0 (with brokerapi v0.9.0) and uses
 its mobile host API as Android's sole orchestrator. B3 uses that API on iOS,
 as documented in [IOS_ENGINE_CUTOVER.md](IOS_ENGINE_CUTOVER.md). The original B1 APIs and measurements below are retained
 for compatibility and historical evidence. The current Android constructor,
@@ -110,7 +110,7 @@ JSON, the binding's actual `TunnelRuntime`, and a local telemetry collector.
 Only the libbox service/network outcomes are simulated. Whole projected status,
 notice, and telemetry streams must equal the upstream vector expectations.
 
-connectcore v0.6.2 exposes its deterministic network/probe seams only to its own
+connectcore v0.7.0 exposes its deterministic network/probe seams only to its own
 package tests. The runner copies that exact tagged module to a temporary test
 workspace and changes only those existing identifiers' visibility. It does not
 change engine logic, modify the module cache, regenerate expectations, or ship
@@ -199,7 +199,7 @@ No subsequent command may start another run while termination is pending.
 
 ## B3 mobile iOS API
 
-`NewOpenRungMobileEngineForIOS(configJSON, OpenRungMobileHost, listener)`
+`NewOpenRungMobileEngineForIOS(configJSON, OpenRungMobileHost, OpenRungInstallationKey, listener)`
 uses the B2 mobile configuration and callbacks with Apple socket ownership.
 It opens the existing app-group `outbox.json`; Android continues using
 `openrung_telemetry_outbox.jsonl`. Both retain a process-lifetime outbox lock.
@@ -216,3 +216,45 @@ on iOS and read again after libbox closes; Android keeps its one-second cadence.
 schema. The binding reconstructs the typed Go error chain; Swift-localized
 error text alone does not lose a timeout/DNS/TLS/errno classification. This is
 additive; the Kotlin callback envelope remains compatible.
+
+## Installation key (ADR-006)
+
+connectcore v0.7.0 requires `MobileHost.Key`: the installation's P-256 identity
+key, from which the broker derives a stable user ID and per-user relay
+credentials. Both mobile constructors take an `OpenRungInstallationKey`, a
+gomobile interface with connectcore's `InstallationKey` method set:
+`PublicKey()` returns the DER SubjectPublicKeyInfo and `Sign(digest)` the raw
+64-byte r‖s signature over an already-computed SHA-256 digest.
+
+- Android (`InstallationKey.kt`): one Android Keystore key, alias
+  `openrung_installation_key_v1`, created on first use with `DIGEST_NONE` and
+  signed through `NONEwithECDSA`; the public key is the key's X.509 encoding.
+- iOS (`PacketTunnel/InstallationKey.swift`): one keychain key in the Packet
+  Tunnel extension's default access group (only the extension runs the engine),
+  in the Secure Enclave when available, otherwise a software keychain key;
+  `AfterFirstUnlockThisDeviceOnly`. Signing uses
+  `ecdsaSignatureDigestX962SHA256`; the X9.63 point is wrapped in the P-256
+  SPKI prefix. The key is deliberately not in a shared keychain access group:
+  neither target declares `keychain-access-groups`, so the app process cannot
+  sign with it, and nothing in the app needs to today. If an app-side broker
+  call (`OpenRungBroker`) ever requires user authentication, the key must move
+  to a shared access group on both targets, and existing installs need a
+  one-time migration of the extension's key into that group, or they enroll
+  as new users.
+- Both platforms convert the DER signature to r‖s natively. A load error other
+  than "not found" never creates a replacement key, because a new key is a new
+  user. `testdata/installation-key-vectors.json` pins the conversion: the Go
+  suite verifies every vector with `brokerapi.VerifyUserAuth` and
+  `SignUserAuthWith`, and the Kotlin and Swift suites map each DER signature
+  and point onto the same bytes.
+- Key failures degrade, never crash: native errors return through gomobile,
+  connectcore logs the reason and connects with the public relay list. A host
+  that lends no key gets a stand-in that always reports "unavailable".
+- A broker refusal of the installation (HTTP 403) arrives as connectcore's
+  `access_denied` notice. The binding's state sink then marks the following
+  FAILED state with `ErrorCode: "access_denied"`, which the hosts expose as
+  `lastErrorCode` (CONTRACT §3) so TypeScript can show a translated message.
+- The app stores nothing else for this: the user ID and access token stay in
+  the engine (the mobile host has no `UserIDPersistence`), and neither key
+  material nor tokens are logged. The telemetry install ID is unrelated.
+
